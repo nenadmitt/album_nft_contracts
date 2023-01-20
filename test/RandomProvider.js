@@ -7,7 +7,7 @@ const { ethers } = require("hardhat");
 
 describe("Random Provider", () => {
     async function randomProviderFixture() {
-        const RandProvider = await ethers.getContractFactory("RandomProvider");
+        const RandProvider = await ethers.getContractFactory("BlockRandomProvider");
         const rand = await RandProvider.deploy();
         await rand.deployed();
 

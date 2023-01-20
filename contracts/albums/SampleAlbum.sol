@@ -1,175 +1,242 @@
 //SPDX-License-Identifier: MIT
 pragma solidity ~0.8.17;
 
-import "./INftAlbum.sol";
 import "../utils/IRandomProvider.sol";
+import "../libs/SafeMath.sol";
 import "hardhat/console.sol";
 
 contract SampleAlbum {
-   
-   // @dev Our base struct which holds the album items
-   struct AlbumItem {
-     
-     // Unique identifier for every single album item,
-     // since we're passing items as a constructor parameter
-     // we have to make sure an input items have unique ids
-     uint id;
-     
-     // Given name for every separate album item
-     string name;
-   }
+    using SafeMath for uint256;
 
-   // Event emmited every time a pack gets open
-   event PackOpened (
-     uint[] ids,
-     address indexed owner
-   );
-
-   // @dev Structure which contains all available album item ids
-   // Used when we perform a draw.
-   // While drawing, we generate a random number ( range of 0 - itemIds.length)
-   // which acts as an index of this array
-   uint[] public itemIds;
-   
-   // specifies the total ammount of available items for collecting
-   uint public totalItems;
-   
-   // @dev mapping which contains all available items
-   // which can easily be looked up by an id of an item
-   mapping(uint => AlbumItem) public itemIdToItem;
-   
-   // @dev a map which tracks how many unique cards an account has.
-   // Used to determine if an account can withdraw the pool prize
-   // Pool prize can be withdrawn if unique item count equals to total items;
-   mapping(address => uint) public uniqueItems;
-
-   // @dev a map that counts how many individual cards
-   // each account has, since it is possible for an account to draw
-   // the same card multiple times
-   // map[ itemOwner ] => map [ itemId ] => owned items count;
-   mapping(address => mapping(uint => uint)) ownedItems;
-
-   // @dev specifies how many random cards user receives
-   // when calling the openPack() function
-   uint public packSize;
-
-   // @dev price of calling a openPack function
-   uint256 public packPrice;
-
-   // @dev used for storing information about users who claimed the prize.
-   // prize pool can only be claimed once
-   mapping(address => bool) prizePoolTaken;
-
-   // @dev 
-   uint256 public prizePool;
-   uint256 public creatorFeePool;
-   uint256 public creatorFee;
-   address public creator;
-
-   // @dev provider responsible for generation of random numbers,
-   // which is used when we perform draw();
-   // the interface contains a single function rand(), which 
-   // has parameters len and range, return int array of generated random numbers
-   // of length @param len in range of 0 - @param range
-   IRandomProvider r;
-
-   mapping(uint256 => mapping(address => bool)) blockPurchase;
-   
-   // modifiers 
-
-   // pack purchase is only allowed once per block
-   modifier _oncePerBlock() {
-      require(blockPurchase[block.timestamp][msg.sender] == false, "Only one purchase per block allowed");
-      _;
-   }
-
-   modifier _onlyCreator() {
-      require(msg.sender == creator, "Only creator can perform this action.");
-      _;
-   }
-
-   modifier _prizeWinner() {
-     require(prizePoolTaken[msg.sender]  == false, "Prize pool can only be taken once");
-     require(uniqueItems[msg.sender] == totalItems, "You haven't collected all the items");
-     _;
-   }
-
-   // !modifiers
-
-   constructor(
-    AlbumItem[] memory _items,
-    address _creator,
-    uint _packSize,
-    uint _packPrice,
-    IRandomProvider _r
-   ) {
-
-    console.log("deploying");
-
-    //Populate and store every single album item 
-    for (uint i = 0; i < _items.length; i++) {
-        itemIdToItem[_items[i].id] = _items[i];
-        itemIds.push(_items[i].id);
+    // @dev Our base struct which holds the album items
+    struct AlbumItem {
+        // Unique identifier for every single album item,
+        // since we're passing items as a constructor parameter
+        // we have to make sure an input items have unique ids
+        uint256 id;
+        // Given name for every separate album item
+        string name;
     }
-    totalItems = _items.length;
 
-    creator = _creator;
-    packPrice = _packPrice;
-    packSize = _packSize;
-    r = _r;
-   }
+    // Event emmited every time a pack gets open
+    event PackOpened(uint256[] drawnCards, address indexed cardsOwner);
 
-   function openPack(address owner) _oncePerBlock() external payable returns (uint[] memory) {
+    // @dev an array which contains all available cards
+    // populated during the deployment of a contract
+    AlbumItem[] public cards;
 
-        require(msg.value >= packPrice, "Not enough funds for purchasing a pack.");
-        
-        blockPurchase[block.timestamp][msg.sender] = true;
+    // @dev a map which tracks how many unique cards an account has.
+    // Used to determine if an account can withdraw the pool prize
+    // Pool prize can be withdrawn if unique item count equals to total items;
+    mapping(address => uint256) public uniqueCards;
 
-        uint[] memory indices = r.rand(itemIds.length, packSize);
-        uint[] memory drawnItems = new uint[](indices.length);
-        
-        for (uint i = 0; i < indices.length; i++) {
-            
-            uint itemIndex = indices[i];
-            uint itemId = itemIds[itemIndex];
-            
-            if ( ownedItems[owner][itemId] == 0 ) {
-                uniqueItems[owner]++;
-            }
+    // @dev a map that counts how many individual cards
+    // each account has, since it is possible for an account to draw
+    // the same card multiple times
+    // map[ itemOwner ] => map [ itemId ] => owned items count;
+    mapping(address => mapping(uint256 => uint256)) public ownedCards;
 
-            ownedItems[owner][itemId]++;
-            drawnItems[i] = itemId;
+    // @dev specifies how many random cards user receives
+    // when calling the openPack() function
+    uint256 public minPackSize;
+    uint256 public maxPackSize;
 
+    // @dev price of calling a openPack function
+    uint256 public pricePerCard;
+
+    // @dev used for storing information about users who claimed the prize.
+    // prize pool can only be claimed once
+    mapping(address => bool) prizePoolTaken;
+
+    // @dev
+    uint256 public prizePool;
+    uint256 public creatorFeePool;
+    uint256 public creatorFee;
+    address public creator;
+
+    // @dev provider responsible for generation of random numbers,
+    // which is used when we perform draw();
+    // the interface contains a single function rand(), which
+    // has parameters len and range, returns uint array of generated random numbers
+    // of length @param len in range of 0 - @param range
+    IRandomProvider private r;
+    uint256 public rand_version = 1;
+    address dev;
+
+    mapping(uint256 => mapping(address => bool)) blockPurchase;
+
+    // modifiers
+
+    // pack purchase is only allowed once per block
+    modifier _oncePerBlock(address owner) {
+        require(
+            blockPurchase[block.timestamp][tx.origin] == false,
+            "Only one purchase per block allowed"
+        );
+        require(
+            blockPurchase[block.timestamp][owner] == false,
+            "Only one purchase per block allowed"
+        );
+        _;
+    }
+
+    modifier _onlyCreator() {
+        require(msg.sender == creator, "Only creator can perform this action.");
+        _;
+    }
+
+    modifier _prizeWinner() {
+        require(
+            prizePoolTaken[msg.sender] == false,
+            "Prize pool can only be taken once"
+        );
+        require(
+            uniqueCards[msg.sender] == cards.length,
+            "You haven't collected all the items"
+        );
+        _;
+    }
+
+    modifier _onlyDev() {
+        require(
+            msg.sender == dev,
+            "Only special account can perform this action"
+        );
+        _;
+    }
+
+    // !modifiers
+
+    constructor(
+        AlbumItem[] memory _items,
+        address _creator,
+        uint256 _minPackSize,
+        uint256 _maxPackSize,
+        uint256 _pricePerCard,
+        uint256 _initialFees,
+        IRandomProvider _r,
+        address _dev
+    ) {
+        for (uint256 i = 0; i < _items.length; i++) {
+            cards.push(_items[i]);
         }
 
-        uint256 _creatorFee =  (msg.value / 100) * 40;
+        // cards = _items;
+
+        creator = _creator;
+        creatorFee = _initialFees;
+        minPackSize = _minPackSize;
+        maxPackSize = _maxPackSize;
+        pricePerCard = _pricePerCard;
+
+        r = _r;
+        dev = _dev;
+    }
+
+    function openPack(address owner, uint256 packSize)
+        external
+        payable
+        _oncePerBlock(owner)
+        returns (uint256[] memory)
+    {
+        require(
+            packSize >= minPackSize && packSize <= maxPackSize,
+            "Album doesn't support provided pack size"
+        );
+
+        uint256 packPrice = packSize.mul(pricePerCard);
+        require(
+            msg.value >= packPrice,
+            "Not enough funds for purchasing a pack."
+        );
+
+        _restrictSameBlockDraw(owner);
+
+        uint256[] memory indices = r.rand(cards.length, packSize);
+        uint256[] memory drawnItems = new uint256[](indices.length);
+
+        for (uint256 i = 0; i < indices.length; i++) {
+            uint256 cardIndex = indices[i];
+            uint256 cardId = cards[cardIndex].id;
+
+            if (ownedCards[owner][cardId] == 0) {
+                uniqueCards[owner]++;
+            }
+
+            ownedCards[owner][cardId]++;
+            drawnItems[i] = cardId;
+        }
+
+        uint256 _creatorFee = msg.value.div(1000).mul(creatorFee);
         creatorFeePool += _creatorFee;
-        prizePool += msg.value - _creatorFee;
+        prizePool += (msg.value - _creatorFee);
 
         emit PackOpened(drawnItems, owner);
 
         return drawnItems;
-   }
+    }
 
-   function withdrawCreatorFees() _onlyCreator() external payable {
-         
-         require(creatorFeePool > 0, "Creator fee pool is empty");
+    function availableCards() external view returns (AlbumItem[] memory) {
+        return cards;
+    }
 
-         uint256 poolValue = creatorFeePool;
-         creatorFeePool = 0;
+    function ownedCardsCount(address _owner, uint256 cardId)
+        external
+        view
+        returns (uint256)
+    {
+        return ownedCards[_owner][cardId];
+    }
 
-         payable(creator).transfer(poolValue);
-   } 
+    function withdrawCreatorFees() external payable _onlyCreator {
+        require(creatorFeePool > 0, "Creator fee pool is empty");
 
-   function withdrawPrize() _prizeWinner() external payable {
-      
-       require(prizePool > 0, "Prize pool is empty");
+        uint256 poolValue = creatorFeePool;
+        creatorFeePool = 0;
 
-       uint poolValue = prizePool;
-       prizePool = 0;
-       prizePoolTaken[msg.sender] = true;
+        payable(creator).transfer(poolValue);
+    }
 
-       payable(msg.sender).transfer(poolValue);
-   }
+    function withdrawPrize() external payable _prizeWinner {
+        require(prizePool > 0, "Prize pool is empty");
 
+        uint256 poolValue = prizePool;
+        prizePool = 0;
+        prizePoolTaken[msg.sender] = true;
+
+        payable(msg.sender).transfer(poolValue);
+    }
+
+    function tranferCard(
+        address from,
+        address to,
+        uint256 cardId
+    ) external {
+        require(
+            ownedCards[from][cardId] > 1,
+            "Only duplicates can be transfered"
+        );
+
+        ownedCards[from][cardId]--;
+        ownedCards[to][cardId]++;
+    }
+
+    function changeFees(uint256 fees) external _onlyCreator {
+        require(
+            fees > 0 && fees < 999,
+            "Fee must be in rage between 1 and 999"
+        );
+
+        creatorFee = fees;
+    }
+
+    function _restrictSameBlockDraw(address owner) internal view {
+        blockPurchase[block.timestamp][tx.origin] == true;
+        blockPurchase[block.timestamp][owner] == true;
+    }
+
+    function changeRand(address rand, uint256 version) external _onlyDev {
+        r = IRandomProvider(rand);
+        rand_version = version;
+    }
 }
