@@ -18,12 +18,27 @@ contract SampleAlbum {
         string name;
     }
 
+    // Event emmited when a rare card gets drawn
+    event RareCardDrawn(uint cardId, address indexed owner);
     // Event emmited every time a pack gets open
-    event PackOpened(uint256[] drawnCards, address indexed cardsOwner);
+    event PackOpened(uint[] pack, address indexed owner);
 
     // @dev an array which contains all available cards
     // populated during the deployment of a contract
     AlbumItem[] public cards;
+    
+    // @dev an array which hold rare cards,
+    // each time a pack is opened, an account has a change 
+    // to draw a rare card
+    // the chance of drawing is specified using rareCardChance variable
+    AlbumItem[] public rareCards;
+
+    // specifies the probablility of drawing a rare card
+    // should be bettween 1 - 999, 1 - 0.001% chance, 999 - 99% chance
+    uint public rareCardChance;
+
+    // specifies a total ammount of card that can be collected
+    uint public totalCardCount;
 
     // @dev a map which tracks how many unique cards an account has.
     // Used to determine if an account can withdraw the pool prize
@@ -108,26 +123,37 @@ contract SampleAlbum {
     // !modifiers
 
     constructor(
-        AlbumItem[] memory _items,
+        AlbumItem[] memory _cards,
+        AlbumItem[] memory _rareCards,
         address _creator,
         uint256 _minPackSize,
         uint256 _maxPackSize,
         uint256 _pricePerCard,
         uint256 _initialFees,
+        uint _rareCardDrawChance,
         IRandomProvider _r,
         address _dev
     ) {
-        for (uint256 i = 0; i < _items.length; i++) {
-            cards.push(_items[i]);
+        uint counter = 1;
+        for (uint256 i = 0; i < _cards.length; i++) {
+            _cards[i].id = counter;
+            cards.push(_cards[i]);
+            counter++;
         }
 
-        // cards = _items;
-
+         for (uint256 i = 0; i < _rareCards.length; i++) {
+            _rareCards[i].id = counter;
+            rareCards.push(_rareCards[i]);
+            counter++;
+        }
+        totalCardCount = counter;
+    
         creator = _creator;
         creatorFee = _initialFees;
         minPackSize = _minPackSize;
         maxPackSize = _maxPackSize;
         pricePerCard = _pricePerCard;
+        rareCardChance = _rareCardDrawChance;
 
         r = _r;
         dev = _dev;
@@ -137,25 +163,30 @@ contract SampleAlbum {
         external
         payable
         _oncePerBlock(owner)
-        returns (uint256[] memory)
     {
-        require(
-            packSize >= minPackSize && packSize <= maxPackSize,
-            "Album doesn't support provided pack size"
-        );
+        require( packSize >= minPackSize && packSize <= maxPackSize, "Album doesn't support provided pack size");
 
         uint256 packPrice = packSize.mul(pricePerCard);
-        require(
-            msg.value >= packPrice,
-            "Not enough funds for purchasing a pack."
-        );
+        require( msg.value >= packPrice, "Not enough funds for purchasing a pack." );
 
         _restrictSameBlockDraw(owner);
 
-        uint256[] memory indices = r.rand(cards.length, packSize);
-        uint256[] memory drawnItems = new uint256[](indices.length);
+        uint rareCardDrawn = 0;
+        if (rareCards.length > 0) {
+             
+             uint rareCardPicker = r.randSingle(1000);
+             
+             if (rareCardPicker <= rareCardChance ) {
+                rareCardDrawn = 1;
+             }
+             rareCardDrawn = 1;
+        }
 
-        for (uint256 i = 0; i < indices.length; i++) {
+        uint commonCardCount = packSize - rareCardDrawn;
+        uint256[] memory indices = r.randRange(cards.length, commonCardCount);
+        uint256[] memory pack = new uint256[](packSize);
+
+        for (uint256 i = 0; i < commonCardCount; i++) {
             uint256 cardIndex = indices[i];
             uint256 cardId = cards[cardIndex].id;
 
@@ -164,20 +195,35 @@ contract SampleAlbum {
             }
 
             ownedCards[owner][cardId]++;
-            drawnItems[i] = cardId;
+            pack[i] = cardId;
+        }
+
+        if (rareCardDrawn > 0) {
+            uint rareCardIndex = r.randSingle(rareCards.length);
+            uint rareCardId = rareCards[rareCardIndex].id;
+            pack[pack.length - 1] = rareCardId;
+
+            if (ownedCards[owner][rareCardId] == 0) {
+                uniqueCards[owner]++;
+            }
+            ownedCards[owner][rareCardId]++;
+
+            emit RareCardDrawn(rareCardId, owner);
         }
 
         uint256 _creatorFee = msg.value.div(1000).mul(creatorFee);
         creatorFeePool += _creatorFee;
         prizePool += (msg.value - _creatorFee);
 
-        emit PackOpened(drawnItems, owner);
-
-        return drawnItems;
+        emit PackOpened(pack, owner);
     }
 
-    function availableCards() external view returns (AlbumItem[] memory) {
+    function availableCommonCards() external view returns (AlbumItem[] memory) {
         return cards;
+    }
+
+    function availableRareCards() external view returns(AlbumItem[] memory) {
+        return rareCards;
     }
 
     function ownedCardsCount(address _owner, uint256 cardId)

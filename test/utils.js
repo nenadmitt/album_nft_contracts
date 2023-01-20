@@ -11,9 +11,14 @@ const RANDOM_PROVIDER_CONTRACT = "BlockRandomProvider";
 const ALBUM_CONTRACT = "SampleAlbum";
 const REGISTAR_CONTRACT = "AlbumRegistar";
 
+const RARE_CARD_DRAWN_EVENT = "RareCardDrawn";
+const PACK_OPENED_EVENT = "PackOpened"
+
 module.exports = {
     generateAlbumItems,
     RANDOM_PROVIDER_CONTRACT,
     ALBUM_CONTRACT,
-    REGISTAR_CONTRACT
+    REGISTAR_CONTRACT,
+    RARE_CARD_DRAWN_EVENT,
+    PACK_OPENED_EVENT
 }

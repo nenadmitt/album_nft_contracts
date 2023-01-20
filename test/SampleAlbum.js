@@ -9,21 +9,42 @@ const {
     RANDOM_PROVIDER_CONTRACT,
     REGISTAR_CONTRACT,
     ALBUM_CONTRACT,
+    RARE_CARD_DRAWN_EVENT,
+    PACK_OPENED_EVENT,
     generateAlbumItems
 } = require("./utils");
 
 describe("SampleAlbum", () => {
 
     const ETH_IN_WEI = ethers.utils.parseUnits('1', 'ether');
-    let albumItems = [];
+    let commonCards = generateAlbumItems(50);
+    let rareCards = generateAlbumItems(10);
     let minPackSize = 3;
     let maxPackSize = 10;
     let pricePerCard = ETH_IN_WEI;
-    let initialFees = 20;
+    let creatorFees = 100 // 10 %;
+    let rareCardDrawChance = 1000; // 100%;
+
+    async function assertUserIsCardOwner(album, address, cardIds) {
+
+        for (let i = 0; i < cardIds.length; i++) {
+            const ownedCardsCount = await album.ownedCardsCount(address, cardIds[i])
+            expect(ownedCardsCount.toNumber() > 0).to.be.true;
+        }
+    }
+
+    async function assertProperFeesAndFeePools(album, packPrice, creatorFees) {
+     
+        const _creatorFees = packPrice.div(1000).mul(creatorFees);
+        const expectedPrizePool = packPrice.sub(_creatorFees);
+
+        const prizePool = await album.prizePool();
+        expect(prizePool).to.equal(expectedPrizePool);
+    }
 
     async function albumContractFixture() {
 
-        const [account01, account02] = await ethers.getSigners();
+        const [account01, account02, account03] = await ethers.getSigners();
 
         const Random = await ethers.getContractFactory(RANDOM_PROVIDER_CONTRACT);
         const random = await Random.deploy();
@@ -31,40 +52,38 @@ describe("SampleAlbum", () => {
 
         const SampleAlbum = await ethers.getContractFactory(ALBUM_CONTRACT);
         const sampleAlbum = await SampleAlbum.deploy(
-            albumItems,
+            commonCards,
+            rareCards,
             account01.address,
             minPackSize,
             maxPackSize,
             pricePerCard,
-            initialFees,
+            creatorFees,
+            rareCardDrawChance,
             random.address,
             account02.address
         )
         await sampleAlbum.deployed();
 
-        return { creator: account01, dev: account02, album: sampleAlbum };
+        return { creator: account01, dev: account02, album: sampleAlbum, user: account03 };
     }
 
     describe("Deployment", () => {
 
         it("Should be able to deploy sample album and set it up via constructor parameters", async () => {
 
-            const ETH_IN_WEI = ethers.utils.parseUnits('1', 'ether');
-            albumItems = generateAlbumItems(250);
-            minPackSize = 5;
-            maxPackSize = 10;
-            initialFees = 10;
-            pricePerCard = ETH_IN_WEI;
-
             const { album, creator } = await loadFixture(albumContractFixture);
 
             const _creatorAddr = await album.creator();
-            const seededCards = await album.availableCards();
+            const availableCommonCards = await album.availableCommonCards();
+            const availableRareCards =  await album.availableRareCards();
             const minPack = await album.minPackSize();
             const maxPack = await album.maxPackSize();
             const singleCardPrice = await album.pricePerCard();
 
-            expect(seededCards.length).to.equal(albumItems.length);
+            expect(availableCommonCards.length).to.equal(commonCards.length);
+            expect(availableRareCards.length).to.equal(rareCards.length);
+
             expect(_creatorAddr).to.equal(creator.address);
 
             expect(singleCardPrice).to.equal(ETH_IN_WEI);
@@ -75,57 +94,63 @@ describe("SampleAlbum", () => {
 
     describe("Populating Album", () => {
 
-        it.only("User should be able to draw cards specified by range and pay specified ammount", async () => {
+
+        it("should NOT be able to open pack with invalid size or invalid pack price", async() => {
+
+            const { album, user } = await loadFixture(albumContractFixture);
+
+            const invalidPackSize = maxPackSize + 1;
+            const invalidPackPrice = ethers.utils.parseUnits('0.01', 'ether');
             
-            albumItems = generateAlbumItems(250);
-            minPackSize = 3;
-            maxPackSize = 6;
-            initialFees = 20;
-            pricePerCard = ethers.utils.parseUnits('1', 'ether');
+            await expect (album.connect(user).openPack(user.address, invalidPackSize, { value: invalidPackPrice }))
+                .to.be.revertedWith("Album doesn't support provided pack size");
 
-            const [_, playerOne] = await ethers.getSigners();
+            const validPackSize = maxPackSize - 1;
+        
+            await expect (album.connect(user).openPack(user.address, validPackSize, { value: invalidPackPrice }))
+            .to.be.revertedWith("Not enough funds for purchasing a pack.");
+        })
 
-            const { album } = await loadFixture(albumContractFixture);
+        it("should be able to by a card pack with valid size and get ownership of drawn cards", async () => {
 
-            const validPackSize = 5;
-            const validPackPrice = pricePerCard.mul(validPackSize);
+            const { album,user} = await loadFixture(albumContractFixture);
 
-            const tx = await album.connect(playerOne).openPack(playerOne.address, validPackSize, {value: validPackPrice});
+            const packSize = maxPackSize - 1;
+            const packPrice = pricePerCard.mul(packSize);
+
+            const tx = await album.connect(user).openPack(user.address, packSize, {value: packPrice});
             const resp = await tx.wait();
 
-            expect(resp.events.length == 1).to.be.true;
+            const pack = resp.events[1].args.pack;
 
-            // asserting that a single PackOpened event gets thrown
-            // and event contains ids of drawn cards
-            const packOpenedEvent = resp.events[0];
-            expect(packOpenedEvent.event).to.equal("PackOpened")
-
-            const drawnCards = packOpenedEvent.args.drawnCards;
-            const cardsOwner = packOpenedEvent.args.cardsOwner;
-
-            // asseting that an account is the owner of drawn cards
-            expect(drawnCards.length).to.equal(validPackSize);
-            expect(cardsOwner).to.equal(playerOne.address);
-
-            for (let i = 0; i < drawnCards.length; i++) {
-                const ownedCardsCount = await album.ownedCardsCount(playerOne.address, drawnCards[i].toNumber());
-                expect(ownedCardsCount).to.be.greaterThan(0);
-            }
-
-            // assert that part of the price went into prize pool
-            // prize pool formula packPrice - creatorFees
-            const FIVE_ETH = ethers.utils.parseUnits('5', 'ether');
-            const fees = FIVE_ETH.div(1000).mul(initialFees);
+            expect(pack.length).to.equal(packSize);
             
-            const expectedPrizePool = FIVE_ETH.sub(fees);
-            const prizePool = await album.prizePool();
-        
-            expect(prizePool).to.equal(expectedPrizePool);
+            await assertUserIsCardOwner(album, user.address, pack);
+            await assertProperFeesAndFeePools(album, packPrice, creatorFees);
         })
 
-        it("account should not be able to purchase an invalid pack size", () => {
+        it("Should draw the rare card if probability is 100%", async() => {
             
-        })
+            const packSize = 5;
+            const packPrice = ethers.utils.parseEther('5', 'ether');
+
+            const { album, dev } = await loadFixture(albumContractFixture);
+
+            const tx = await album.openPack(dev.address, packSize, {value: packPrice});
+            const resp = await tx.wait();
+
+            const packOpenedEvent = resp.events[1];
+            const rareCardDrawnEvent = resp.events[0];
+
+            expect(packOpenedEvent.event).to.equal(PACK_OPENED_EVENT);
+            expect(rareCardDrawnEvent.event).to.equal(RARE_CARD_DRAWN_EVENT)
+            
+            const commonCardsDrawn = packOpenedEvent.args.pack;
+            const rareCardId = rareCardDrawnEvent.args.cardId;
+
+            await assertUserIsCardOwner(album, dev.address, [...commonCardsDrawn, rareCardId]);
+            await assertProperFeesAndFeePools(album, packPrice, creatorFees);
+        });
     })
 
     // describe("Functionality", () => {

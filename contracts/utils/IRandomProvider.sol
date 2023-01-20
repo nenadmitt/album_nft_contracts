@@ -5,5 +5,6 @@ import "hardhat/console.sol";
 
 interface IRandomProvider {
     
-    function rand(uint range, uint len) external view returns (uint[] memory); 
+    function randSingle(uint len) external view returns (uint);
+    function randRange(uint range, uint len) external view returns (uint[] memory);
 }
